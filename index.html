@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen–SALOME agent — remeshing 데모</title>
+<style>
+  :root{
+    --bg:#14171c; --panel:rgba(22,26,33,0.88); --panel-line:#2b323d;
+    --fg:#dde4ee; --dim:#8b96a5; --accent:#4cc2ff; --green:#3ddc84;
+    --red:#ff5c5c; --orange:#ff9f43; --teal:#2dd4bf; --grid:#7f93a8;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
+    color:var(--fg); font-family:"Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif;}
+  #wrap{position:relative;width:100%;height:100%;}
+  canvas#c{position:absolute;inset:0;width:100%;height:100%;display:block;}
+
+  /* ---------- 좌측 패널 ---------- */
+  #panel{
+    position:absolute; left:0; top:0; bottom:0; width:360px; z-index:10;
+    background:var(--panel); backdrop-filter:blur(6px);
+    border-right:1px solid var(--panel-line);
+    padding:18px 16px; overflow-y:auto;
+  }
+  #panel::-webkit-scrollbar{width:6px;} #panel::-webkit-scrollbar-thumb{background:#3a424e;border-radius:3px;}
+  h1{font-size:18px; font-weight:700; letter-spacing:-0.3px; line-height:1.35;}
+  .subtitle{font-size:13px; color:var(--dim); margin-top:4px; margin-bottom:14px;}
+  .sec{margin-top:14px; padding-top:12px; border-top:1px solid var(--panel-line);}
+  .sec-title{font-size:12px; color:var(--dim); letter-spacing:1px; margin-bottom:8px;}
+
+  /* 스테퍼 */
+  #stepper{display:flex; gap:6px; align-items:center;}
+  #stepper button{
+    flex:0 0 auto; background:#232a34; color:var(--fg); border:1px solid #3a424e;
+    border-radius:6px; padding:7px 0; font-size:14px; cursor:pointer; transition:background .15s,border-color .15s;
+  }
+  #stepper button:hover:not(:disabled){background:#2d3642;}
+  #stepper button:disabled{opacity:0.35; cursor:default;}
+  #stepper .arrow{width:36px;}
+  #stepper .stage-btn{width:56px;}
+  #stepper .stage-btn.active{background:var(--accent); border-color:var(--accent); color:#0b1017; font-weight:700;}
+  #autoplay{margin-top:8px; width:100%; background:#232a34; color:var(--fg);
+    border:1px solid #3a424e; border-radius:6px; padding:7px 0; font-size:13.5px; cursor:pointer;}
+  #autoplay.on{background:#1d4d46; border-color:var(--teal); color:var(--teal);}
+  #autoplay:disabled{opacity:0.35; cursor:default;}
+
+  /* 설명 카드 */
+  #desc-card{background:#1b212a; border:1px solid #2e3743; border-radius:8px; padding:12px;}
+  #desc-label{font-size:15.5px; font-weight:700; color:var(--accent);}
+  #desc-sub{font-size:12.5px; color:var(--dim); margin-top:2px;}
+  #desc-body{font-size:14px; line-height:1.65; margin-top:8px; word-break:keep-all;}
+
+  /* 지표 표 */
+  table#stats{width:100%; border-collapse:collapse; font-size:14px;}
+  table#stats td{padding:4px 2px; border-bottom:1px solid #232a33;}
+  table#stats td.k{color:var(--dim);}
+  table#stats td.v{text-align:right; font-variant-numeric:tabular-nums;}
+  table#stats td.d{text-align:right; width:74px; font-size:12px; font-variant-numeric:tabular-nums;}
+  .d-good{color:var(--green);} .d-bad{color:var(--red);} .d-cost{color:#9aa4b1;} .d-none{color:#525c68;}
+
+  /* 스팬 단면 슬라이더 */
+  #slice-ctl{display:flex; gap:6px; align-items:center;}
+  #slice-ctl button{
+    flex:0 0 auto; width:36px; background:#232a34; color:var(--fg); border:1px solid #3a424e;
+    border-radius:6px; padding:7px 0; font-size:14px; cursor:pointer;
+  }
+  #slice-ctl button:hover{background:#2d3642;}
+  #slice-ctl input[type=range]{flex:1 1 auto; accent-color:var(--accent); cursor:pointer; min-width:0;}
+  #slice-label{font-size:13.5px; color:var(--dim); margin-top:6px; font-variant-numeric:tabular-nums;}
+
+  /* 토글 */
+  .toggle-row{display:flex; align-items:center; gap:8px; padding:4px 0; font-size:14px; cursor:pointer; user-select:none;}
+  .toggle-row input{accent-color:var(--accent); width:15px; height:15px; cursor:pointer;}
+  .chip{display:inline-block; width:10px; height:10px; border-radius:2px; flex:0 0 auto;}
+
+  #reset-cam{width:100%; background:#232a34; color:var(--fg); border:1px solid #3a424e;
+    border-radius:6px; padding:7px 0; font-size:13.5px; cursor:pointer; margin-bottom:10px;}
+  #reset-cam:hover{background:#2d3642;}
+  .legend-item{display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--dim); padding:2px 0;}
+
+  /* ---------- 캔버스 오버레이 ---------- */
+  #hud{
+    position:absolute; top:16px; right:20px; z-index:5; text-align:right;
+    pointer-events:none; text-shadow:0 1px 4px rgba(0,0,0,0.6);
+  }
+  body.chat-open #hud{right:420px;}
+  body:not(.chat-open) #hud{top:64px;} /* 접힘: '대화 열기' 버튼 아래로 */
+  #hud .big{font-size:38px; font-weight:800; letter-spacing:-1px;}
+  #hud .of{font-size:17px; color:var(--dim); font-weight:400;}
+  #hud .hud-label{font-size:13px; color:var(--dim); margin-top:-4px;}
+  #help{
+    position:absolute; bottom:12px; right:16px; z-index:5; font-size:12.5px; color:#77828f;
+    pointer-events:none; text-shadow:0 1px 3px rgba(0,0,0,0.7);
+  }
+  body.chat-open #help{right:416px;}
+  #badge{
+    position:absolute; top:16px; left:376px; z-index:6;
+    background:rgba(255,159,67,0.15); color:var(--orange); border:1px solid var(--orange);
+    border-radius:5px; padding:3px 10px; font-size:12.5px; display:none;
+  }
+  #slice-empty{
+    position:absolute; top:60px; left:calc(50% + 180px); transform:translateX(-50%); z-index:6;
+    background:rgba(255,159,67,0.12); color:var(--orange); border:1px solid var(--orange);
+    border-radius:6px; padding:5px 14px; font-size:13px; display:none; pointer-events:none;
+  }
+  body.chat-open #slice-empty{left:calc(50% - 20px);}
+
+  /* ---------- 회차 비교 표 (캔버스 하단 중앙) ---------- */
+  #cmp-bar{
+    position:absolute; bottom:14px; left:calc(50% + 180px); transform:translateX(-50%);
+    z-index:6; background:rgba(22,26,33,0.80); backdrop-filter:blur(5px);
+    border:1px solid var(--panel-line); border-radius:8px; padding:8px 12px 9px;
+    max-width:calc(100% - 380px);
+  }
+  body.chat-open #cmp-bar{left:calc(50% - 20px); max-width:calc(100% - 790px);}
+  body.story-pre #cmp-bar{display:none;}
+  #cmp-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px;}
+  #cmp-head .t{font-size:11.5px; color:var(--dim); letter-spacing:1px;}
+  #cmp-toggle{display:none; background:#232a34; color:var(--fg); border:1px solid #3a424e;
+    border-radius:5px; padding:2px 8px; font-size:11.5px; cursor:pointer;}
+  table#cmp{border-collapse:collapse; font-size:13px;}
+  #cmp th{color:var(--dim); font-weight:600; padding:2px 10px 4px; text-align:right; font-size:12px;}
+  #cmp th.rl, #cmp td.rl{text-align:left; color:var(--dim); padding-left:2px; padding-right:8px; white-space:nowrap;}
+  #cmp td{padding:2px 10px 3px; text-align:right; font-variant-numeric:tabular-nums; border-top:1px solid #232a33;}
+  #cmp td.rl{border-top:1px solid #232a33;}
+  #cmp .cur{background:rgba(76,194,255,0.10);}
+  #cmp th.cur{color:var(--accent);}
+  #cmp th.chid, #cmp td.chid{opacity:0.35;}
+  #cmp .cv{font-size:13.5px; color:var(--fg);}
+  #cmp .cd{font-size:11px; margin-top:1px;}
+  .cd-good{color:var(--green);} .cd-bad{color:var(--red);} .cd-none{color:#525c68;}
+
+  /* ---------- 대화 패널 (v3 — run_009 대화 재현) ---------- */
+  #chat{
+    position:absolute; right:0; top:0; bottom:0; width:400px; z-index:12;
+    background:var(--panel); backdrop-filter:blur(6px);
+    border-left:1px solid var(--panel-line);
+    display:flex; flex-direction:column;
+  }
+  body:not(.chat-open) #chat{display:none;}
+  #chat-head{position:relative; padding:14px 70px 10px 16px; border-bottom:1px solid var(--panel-line);}
+  #chat-head .t{font-size:16px; font-weight:700;}
+  #chat-head .s{font-size:12.5px; color:var(--dim); margin-top:3px; line-height:1.5; word-break:keep-all;}
+  #chat-collapse{position:absolute; top:12px; right:12px; background:#232a34; color:var(--fg);
+    border:1px solid #3a424e; border-radius:6px; padding:4px 10px; font-size:12.5px; cursor:pointer;}
+  #chat-collapse:hover{background:#2d3642;}
+  #chat-open-tab{position:absolute; top:16px; right:16px; z-index:12; display:none;
+    background:#232a34; color:var(--fg); border:1px solid #3a424e; border-radius:8px;
+    padding:8px 14px; font-size:14px; cursor:pointer;}
+  body:not(.chat-open) #chat-open-tab{display:block;}
+  #chat-msgs{flex:1 1 auto; overflow-y:auto; padding:14px 14px 8px;
+    display:flex; flex-direction:column; gap:10px;}
+  #chat-msgs::-webkit-scrollbar{width:6px;}
+  #chat-msgs::-webkit-scrollbar-thumb{background:#3a424e;border-radius:3px;}
+  .msg{max-width:92%; border-radius:10px; padding:9px 12px; font-size:15px;
+    line-height:1.6; word-break:keep-all; overflow-wrap:anywhere;}
+  .msg .mlabel{display:block; font-size:11.5px; color:var(--dim); margin-bottom:4px; letter-spacing:0.3px;}
+  .m-user{align-self:flex-end; background:#173a52; border:1px solid #2a6a95;}
+  .m-agent{align-self:flex-start; background:#1e242e; border:1px solid #313b48;}
+  .m-qwen{align-self:flex-start; background:#251f3a; border:1px solid #4a3d75;}
+  .m-qwen .mlabel{color:#b8a5e8;}
+  .m-sys{align-self:center; background:transparent; border:none; color:var(--dim);
+    font-size:13px; text-align:center; padding:2px 6px;}
+  .msg pre{font-family:Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.55;
+    background:#10141a; border:1px solid #262e39; border-radius:6px; padding:8px 10px;
+    margin-top:6px; overflow-x:auto; white-space:pre;}
+  .msg table{width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px;}
+  .msg table td{padding:3px 4px; border-bottom:1px solid #262e39; vertical-align:top;}
+  .msg table td.k{color:var(--dim); white-space:nowrap;}
+  .msg table td.v{text-align:right; font-variant-numeric:tabular-nums;}
+  .msg .ask{margin-top:7px; color:var(--accent); font-weight:700;}
+  .msg .good{color:var(--green); font-weight:700;}
+  .msg .em{color:var(--accent); font-weight:600;}
+  .msg .note{color:var(--dim); font-size:13px; margin-top:6px;}
+  .typing{display:inline-flex; gap:4px; padding:4px 2px;}
+  .typing i{width:6px; height:6px; border-radius:50%; background:#8b96a5; animation:tp 1s infinite;}
+  .typing i:nth-child(2){animation-delay:0.15s;} .typing i:nth-child(3){animation-delay:0.3s;}
+  @keyframes tp{0%,60%,100%{opacity:0.25; transform:translateY(0);} 30%{opacity:1; transform:translateY(-3px);}}
+  #chat-input-bar{padding:10px 14px 8px; border-top:1px solid var(--panel-line);}
+  #chat-fakein{background:#10141a; border:1px solid #313b48; border-radius:8px;
+    min-height:40px; padding:9px 12px; font-size:15px; color:var(--fg);
+    display:flex; align-items:center;}
+  #chat-fakein.idle{color:#525c68;}
+  #chat-fakein .caret{display:inline-block; width:2px; height:18px; background:var(--accent);
+    margin-left:2px; animation:ck 1s steps(1) infinite;}
+  @keyframes ck{50%{opacity:0;}}
+  #chat-controls{display:flex; gap:8px; padding:0 14px 12px; margin-top:8px;}
+  #chat-controls button{flex:1; background:#232a34; color:var(--fg); border:1px solid #3a424e;
+    border-radius:8px; padding:9px 0; font-size:14.5px; cursor:pointer;}
+  #chat-controls button:hover:not(:disabled){background:#2d3642;}
+  #btn-story-next{background:#144a63; border-color:#2f88b7; color:#cfeeff; font-weight:700; flex:1.4;}
+  #btn-story-next:hover:not(:disabled){background:#1a5b79;}
+  #btn-story-next:disabled{opacity:0.4; cursor:default;}
+  #btn-story-auto.on{background:#1d4d46; border-color:var(--teal); color:var(--teal);}
+</style>
+</head>
+<body class="chat-open">
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <div id="panel">
+    <h1>Qwen–SALOME agent — remeshing 데모</h1>
+    <div class="subtitle" id="run-subtitle">run_009 · wing 외부유동 격자</div>
+
+    <div class="sec">
+      <div class="sec-title">REMESHING 회차</div>
+      <div id="stepper">
+        <button class="arrow" id="btn-prev">◀</button>
+        <button class="stage-btn" data-stage="0">0회</button>
+        <button class="stage-btn" data-stage="1">1회</button>
+        <button class="stage-btn" data-stage="2">2회</button>
+        <button class="arrow" id="btn-next">▶</button>
+      </div>
+      <button id="autoplay">자동 재생</button>
+    </div>
+
+    <div class="sec">
+      <div id="desc-card">
+        <div id="desc-label"></div>
+        <div id="desc-sub"></div>
+        <div id="desc-body"></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">격자 지표</div>
+      <table id="stats"><tbody id="stats-body"></tbody></table>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">스팬 단면</div>
+      <div id="slice-ctl">
+        <button id="btn-slice-prev">◀</button>
+        <input type="range" id="slice-range" min="1" max="20" step="1" value="19">
+        <button id="btn-slice-next">▶</button>
+      </div>
+      <div id="slice-label">단면 19/20</div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">표시</div>
+      <label class="toggle-row"><input type="checkbox" id="tg-sym" checked>
+        <span class="chip" style="background:#7f93a8"></span>격자 단면 (스팬 20분할)</label>
+      <label class="toggle-row"><input type="checkbox" id="tg-wall" checked>
+        <span class="chip" style="background:#5f7186"></span>날개 표면</label>
+      <label class="toggle-row"><input type="checkbox" id="tg-bad" checked>
+        <span class="chip" style="background:#ff5c5c"></span>불량 요소</label>
+      <label class="toggle-row"><input type="checkbox" id="tg-presc" checked>
+        <span class="chip" style="background:linear-gradient(90deg,#2dd4bf,#ff9f43)"></span>처방 형상</label>
+      <label class="toggle-row"><input type="checkbox" id="tg-cluster">
+        <span class="chip" style="background:transparent;border:1.5px dashed #ff5c5c"></span>진단 무리</label>
+    </div>
+
+    <div class="sec">
+      <button id="reset-cam">카메라 리셋</button>
+      <div class="legend-item"><span class="chip" style="background:#7f93a8"></span>격자 단면 (스팬 20분할) edge</div>
+      <div class="legend-item"><span class="chip" style="background:#8b96a5;opacity:0.4"></span>단면 위치 표시 윤곽</div>
+      <div class="legend-item"><span class="chip" style="background:#5f7186"></span>날개 표면 (음영)</div>
+      <div class="legend-item"><span class="chip" style="background:#ff5c5c"></span>불량 tetra 중심점</div>
+      <div class="legend-item"><span class="chip" style="background:#2dd4bf"></span>처방 — 후류 원기둥</div>
+      <div class="legend-item"><span class="chip" style="background:#ff9f43"></span>처방 — 껍질판 상자</div>
+      <div class="legend-item"><span class="chip" style="background:transparent;border:1.5px dashed #ff5c5c"></span>진단 불량 무리</div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div><span class="big" id="hud-stage">0회</span> <span class="of">/ 2회</span></div>
+    <div class="hud-label" id="hud-label"></div>
+  </div>
+  <div id="help">좌드래그 회전 · 우드래그/휠드래그 이동 · 휠 줌 · ←→ 회차 · ↑↓ 단면</div>
+  <div id="badge">샘플 데이터</div>
+  <div id="slice-empty">빈 단면 — 이 위치에는 격자 단면이 없습니다</div>
+
+  <div id="cmp-bar">
+    <div id="cmp-head">
+      <span class="t">회차 비교 — 격자 품질 지표</span>
+      <button id="cmp-toggle">지표 표 접기</button>
+    </div>
+    <table id="cmp"></table>
+  </div>
+
+  <button id="chat-open-tab">💬 대화 열기</button>
+  <div id="chat">
+    <div id="chat-head">
+      <div class="t">자연어 대화 — run_009 재현</div>
+      <div class="s">판단은 <span style="color:#b8a5e8">Qwen(보라)</span>, 서술·계산·규율은 코드(회색) — 대화·수치는 실측 기록 그대로</div>
+      <button id="chat-collapse">접기 ›</button>
+    </div>
+    <div id="chat-msgs"></div>
+    <div id="chat-input-bar">
+      <div id="chat-fakein" class="idle">사용자 입력…</div>
+    </div>
+    <div id="chat-controls">
+      <button id="btn-story-next">다음 ▶ <span style="font-size:11.5px;opacity:0.8">(Space)</span></button>
+      <button id="btn-story-auto">자동 재생</button>
+      <button id="btn-story-reset">처음부터</button>
+    </div>
+  </div>
+</div>
+
+<script src="lib/three.min.js"></script>
+<script src="data/demo_data.js"></script>
+<script>
+(function(){
+'use strict';
+
+/* ================= base64 <-> typed array ================= */
+function b64ToArr(b64, Ctor){const s=atob(b64);const u=new Uint8Array(s.length);
+for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return new Ctor(u.buffer);}
+
+function arrToB64(typed){
+  var u = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength);
+  var s = '';
+  for(var i=0;i<u.length;i+=8192){
+    s += String.fromCharCode.apply(null, u.subarray(i, Math.min(i+8192, u.length)));
+  }
+  return btoa(s);
+}
+function f32b64(a){ return arrToB64(a instanceof Float32Array ? a : new Float32Array(a)); }
+function u32b64(a){ return arrToB64(a instanceof Uint32Array ? a : new Uint32Array(a)); }
+function u16b64(a){ return arrToB64(a instanceof Uint16Array ? a : new Uint16Array(a)); }
+
+/* ================= 합성(샘플) 데이터 생성기 (스키마 v2) ================= */
+/* window.DEMO_DATA 가 없거나 v2 스키마가 아닐 때만 사용. 스키마는 실데이터와 동일. */
+function synthRand(seed){ // 결정적 의사난수
+  var s = seed >>> 0;
+  return function(){ s = (s*1664525 + 1013904223) >>> 0; return s/4294967296; };
+}
+
+// x-z 평면 삼각화 격자 패치 (y=0) -> {pos:[x,y,z...], edges:[a,b...]}
+function symPatch(x0,z0,x1,z1,h,seed){
+  var nx = Math.max(1, Math.round((x1-x0)/h));
+  var nz = Math.max(1, Math.round((z1-z0)/h));
+  var rnd = synthRand(seed);
+  var pos = [], nvx = nx+1, i, j;
+  for(j=0;j<=nz;j++){
+    for(i=0;i<=nx;i++){
+      var x = x0 + (x1-x0)*i/nx;
+      var z = z0 + (z1-z0)*j/nz;
+      if(i>0 && i<nx) x += (rnd()-0.5)*h*0.45;
+      if(j>0 && j<nz) z += (rnd()-0.5)*h*0.45;
+      pos.push(x, 0, z);
+    }
+  }
+  var eset = new Set(), edges = [];
+  function addE(a,b){ var k = a<b ? a*1e6+b : b*1e6+a;
+    if(!eset.has(k)){ eset.add(k); edges.push(a,b); } }
+  for(j=0;j<nz;j++){
+    for(i=0;i<nx;i++){
+      var a=j*nvx+i, b=j*nvx+i+1, c=(j+1)*nvx+i+1, d=(j+1)*nvx+i;
+      addE(a,b); addE(b,c); addE(c,d); addE(d,a);
+      if((i+j)%2===0){ addE(a,c); } else { addE(b,d); }
+    }
+  }
+  return {pos:pos, edges:edges};
+}
+
+function mergePatches(patches){
+  var pos=[], edges=[], off=0, p, k;
+  for(k=0;k<patches.length;k++){
+    p = patches[k];
+    for(var m=0;m<p.pos.length;m++) pos.push(p.pos[m]);
+    for(var e=0;e<p.edges.length;e++) edges.push(p.edges[e]+off);
+    off += p.pos.length/3;
+  }
+  return { _posArr:new Float32Array(pos), _edgeArr:new Uint32Array(edges),
+           n_pos:pos.length/3, n_edges:edges.length/2 };
+}
+
+/* 병합 패치(y=0 평면) -> v2 slices 20개 (u16 양자화 + b64, y만 슬라이스별로 이동).
+   좌표가 y만 다르므로 pos_q/edges 문자열은 공유하고 bbox.min[1]로 y를 부여한다. */
+function synthSlices(merged, ys){
+  var n = merged.n_pos, pos = merged._posArr;
+  var mnx=Infinity, mxx=-Infinity, mnz=Infinity, mxz=-Infinity, i;
+  for(i=0;i<n;i++){
+    var x=pos[i*3], z=pos[i*3+2];
+    if(x<mnx)mnx=x; if(x>mxx)mxx=x;
+    if(z<mnz)mnz=z; if(z>mxz)mxz=z;
+  }
+  var sx=mxx-mnx, sz=mxz-mnz;
+  var q = new Uint16Array(n*3);
+  for(i=0;i<n;i++){
+    q[i*3  ] = sx>0 ? Math.round((pos[i*3  ]-mnx)/sx*65535) : 0;
+    q[i*3+1] = 0;
+    q[i*3+2] = sz>0 ? Math.round((pos[i*3+2]-mnz)/sz*65535) : 0;
+  }
+  var posB = u16b64(q);
+  var edt = (n > 65535) ? 'u32' : 'u16';
+  var edgB = (edt === 'u32') ? u32b64(merged._edgeArr) : u16b64(new Uint16Array(merged._edgeArr));
+  return ys.map(function(y){
+    return { pos_q: posB, n_pos: n, edges: edgB, n_edges: merged.n_edges, edge_dtype: edt,
+             bbox: { min:[mnx, y, mnz], size:[sx, 0, sz] } };
+  });
+}
+
+function synthWall(chord, span, thick){
+  var g = new THREE.BoxGeometry(chord, span, thick, 6, 10, 2);
+  g.translate(chord/2, span/2, 0);
+  var posAttr = g.attributes.position;
+  var pos = new Float32Array(posAttr.array);
+  var idxSrc = g.index.array;
+  var idx = new Uint32Array(idxSrc.length);
+  for(var i=0;i<idxSrc.length;i++) idx[i]=idxSrc[i];
+  g.dispose();
+  return { _posArr:pos, _idxArr:idx, n_pos:pos.length/3, n_tri:idx.length/3 };
+}
+
+function synthBad(centers, total, seed){
+  var rnd = synthRand(seed), pts = new Float32Array(total*3);
+  for(var i=0;i<total;i++){
+    var c = centers[i % centers.length];
+    pts[i*3  ] = c[0] + (rnd()+rnd()-1)*c[3];
+    pts[i*3+1] = Math.max(0, c[1] + (rnd()+rnd()-1)*c[4]);
+    pts[i*3+2] = c[2] + (rnd()+rnd()-1)*c[5];
+  }
+  return { _ptsArr: pts, n: total };
+}
+
+function makeSynthetic(){
+  var chord=0.12, span=0.3, thick=0.0312;
+  var nSlice = 20, ys = [];
+  for(var yi=0; yi<nSlice; yi++) ys.push((yi+0.5)*span/nSlice);
+
+  var base   = [ symPatch(-0.8,-1.2,1.6,1.2,0.08,11),
+                 symPatch(-0.06,-0.12,0.30,0.12,0.012,22) ];
+  var wake   = base.concat([ symPatch(0.12,-0.09,1.35,0.09,0.014,33) ]);
+  var shell  = wake.concat([ symPatch(0.07,-0.03,0.17,0.03,0.006,44),
+                             symPatch(0.30,-0.05,0.45,0.05,0.006,55) ]);
+  var wall = synthWall(chord, span, thick);
+
+  var badC1 = [ [0.14,0.28,0.005, 0.02,0.03,0.012],
+                [0.13,0.05,-0.004,0.02,0.04,0.012],
+                [0.35,0.15,0.0,   0.10,0.08,0.03 ] ];
+  var badC2 = [ [0.14,0.28,0.005, 0.015,0.02,0.008],
+                [0.36,0.14,0.0,   0.06,0.05,0.02 ] ];
+
+  var wakeCyl = [];
+  for(var i=0;i<6;i++){
+    wakeCyl.push({ x0:0.12, y:0.15, z:0,
+      len: 0.10 + 0.22*i, r: 0.030 + 0.020*i,
+      size: +(0.003*Math.pow(1.463,i)).toFixed(4) });
+  }
+  var shellBoxes = [], centers = [[0.12,0.28,0.0],[0.13,0.05,0.0]];
+  var clusters = [];
+  for(var c=0;c<2;c++){
+    var cc = centers[c];
+    for(var k=0;k<6;k++){
+      var hx=0.020+0.014*k, hy=0.028+0.016*k, hz=0.012+0.010*k;
+      shellBoxes.push({ x0:cc[0]-hx, y0:Math.max(0,cc[1]-hy), z0:cc[2]-hz,
+                        x1:cc[0]+hx, y1:cc[1]+hy, z1:cc[2]+hz,
+                        size:+(0.004*Math.pow(1.32,k)).toFixed(4) });
+    }
+  }
+  var clC = [[0.14,0.28,0.005],[0.13,0.05,-0.004],[0.33,0.15,0.0],[0.40,0.12,0.01],[0.36,0.19,-0.01]];
+  for(var q=0;q<5;q++){
+    var p = clC[q], h=0.018+0.004*q;
+    clusters.push({ x0:p[0]-h, y0:Math.max(0,p[1]-h), z0:p[2]-h,
+                    x1:p[0]+h, y1:p[1]+h, z1:p[2]+h, count: 420-70*q });
+  }
+
+  return {
+    meta: { version:2, run:"sample", date:"2026-09-16", units:"m",
+      wing:{ chord:chord, span:span, thickness:thick },
+      domain:{ x0:-0.8, y0:0, z0:-1.2, x1:1.6, y1:1.2, z1:1.2 },
+      slices:{ axis:"y", count:nSlice, ys:ys } },
+    stages: [
+      { label:"0회 — 초기 격자", sub:"후류 세분화 없음 (remeshing 전)",
+        stats:{ elements:1276000, prisms:508000, tetras:768000,
+                bad:null, bad_rate:null, crit:null, ar:null, northo:null, skew:null },
+        prescription:{ type:"none" },
+        wall: wall, bad: null, slices: synthSlices(mergePatches(base), ys) },
+      { label:"1회 — 후류 세분화", sub:"코드가 후류 원기둥 6단 자동 추가",
+        stats:{ elements:1706000, prisms:508000, tetras:1198000,
+                bad:10530, bad_rate:0.617, crit:37, ar:1210, northo:62.4, skew:0.86 },
+        prescription:{ type:"wake", cylinders: wakeCyl },
+        wall: wall, bad: synthBad(badC1, 620, 77), slices: synthSlices(mergePatches(wake), ys) },
+      { label:"2회 — 껍질판 세분화", sub:"Qwen이 shell 처방 선택 (2곳 x 6겹)",
+        stats:{ elements:1862000, prisms:508000, tetras:1354000,
+                bad:6590, bad_rate:0.354, crit:12, ar:890, northo:58.9, skew:0.83 },
+        prescription:{ type:"shell", boxes: shellBoxes, clusters: clusters },
+        wall: wall, bad: synthBad(badC2, 360, 88), slices: synthSlices(mergePatches(shell), ys) }
+    ]
+  };
+}
+
+/* ================= 데이터 로드 & 디코드 ================= */
+/* v2: wall/bad는 즉시 디코드, slices는 지연 디코드(getSlice)라 원본 그대로 보관 */
+function decodeStage(s){
+  var wall = s.wall._posArr ? { pos:s.wall._posArr, idx:s.wall._idxArr }
+           : { pos:b64ToArr(s.wall.pos, Float32Array), idx:b64ToArr(s.wall.idx, Uint32Array) };
+  var bad = null;
+  if(s.bad){
+    bad = { pts: s.bad._ptsArr ? s.bad._ptsArr : b64ToArr(s.bad.pts, Float32Array) };
+  }
+  if(!Array.isArray(s.slices) || s.slices.length < 1) throw new Error('slices 배열 없음');
+  return { label:s.label, sub:s.sub, stats:s.stats||{}, prescription:s.prescription||{type:"none"},
+           wall:wall, bad:bad, slices:s.slices };
+}
+
+function isV2(d){
+  return !!(d && d.meta && d.meta.version === 2 && d.stages && d.stages.length === 3);
+}
+
+var usingSample = false;
+var rawData = null;
+if(isV2(window.DEMO_DATA)){
+  rawData = window.DEMO_DATA;
+}else{
+  usingSample = true;
+  rawData = makeSynthetic();
+}
+var STAGES;
+try{
+  STAGES = rawData.stages.map(decodeStage);
+}catch(err){
+  console.warn('DEMO_DATA 디코드 실패 — 합성 데이터로 대체:', err);
+  usingSample = true;
+  rawData = makeSynthetic();
+  STAGES = rawData.stages.map(decodeStage);
+}
+if(usingSample){
+  document.getElementById('badge').style.display = 'block';
+}
+if(rawData.meta && rawData.meta.run){
+  document.getElementById('run-subtitle').textContent =
+    rawData.meta.run + ' · wing 외부유동 격자' + (usingSample ? ' (합성)' : '');
+}
+
+/* 스팬 단면 y 좌표 목록 */
+var SLICE_YS;
+if(rawData.meta && rawData.meta.slices && rawData.meta.slices.ys && rawData.meta.slices.ys.length){
+  SLICE_YS = rawData.meta.slices.ys;
+}else{
+  SLICE_YS = [];
+  var _span = (rawData.meta && rawData.meta.wing) ? rawData.meta.wing.span : 0.3;
+  for(var _i=0;_i<20;_i++) SLICE_YS.push((_i+0.5)*_span/20);
+}
+var SLICE_COUNT = Math.min(SLICE_YS.length, STAGES[0].slices.length);
+var currentSlice = Math.min(18, SLICE_COUNT-1); // 기본: 후류 관통 단면
+var sliceCache = {}; // "stage_slice" -> 디코드 결과 (지연+캐시)
+
+function getSlice(i, j){
+  var key = i + '_' + j;
+  if(sliceCache[key]) return sliceCache[key];
+  var sl = STAGES[i].slices[j];
+  var out;
+  if(!sl || !sl.n_pos){
+    out = { n_pos: 0, pos: null, edges: null };
+  }else{
+    var n = sl.n_pos;
+    var q = b64ToArr(sl.pos_q, Uint16Array);
+    var pos = new Float32Array(n*3);
+    var mn = sl.bbox.min, sz = sl.bbox.size;
+    for(var p=0;p<n;p++){
+      for(var k=0;k<3;k++){
+        var s = sz[k];
+        pos[p*3+k] = s ? (mn[k] + q[p*3+k]/65535*s) : mn[k]; // 양자화 복원
+      }
+    }
+    var edges = b64ToArr(sl.edges, sl.edge_dtype === 'u32' ? Uint32Array : Uint16Array);
+    out = { n_pos: n, pos: pos, edges: edges };
+  }
+  sliceCache[key] = out;
+  return out;
+}
+
+var DESC = [
+  "Qwen agent가 만든 초기 격자. 날개 주변(10mm)과 배경(80mm)만 처방된 상태 — 후류 방향 해상도가 없다.",
+  "remeshing 진입: 코드가 후류 원기둥 6단(3→20mm)을 자동 추가. 날개 뒤 후류 통로가 촘촘해진다. (+43만 요소)",
+  "불량 요소 무리(빨강)를 진단하고 Qwen이 결정표에서 껍질판(shell)을 선택 — 중첩 상자 6겹×2곳 국부 세분화. 불량률 0.617→0.354%."
+];
+
+/* ================= three.js 기본 ================= */
+var canvas = document.getElementById('c');
+var renderer = new THREE.WebGLRenderer({ canvas:canvas, antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+var scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+var camera = new THREE.PerspectiveCamera(45, 1, 0.005, 100);
+
+scene.add(new THREE.HemisphereLight(0x9ab0c8, 0x272b33, 0.95));
+var dir = new THREE.DirectionalLight(0xffffff, 0.85);
+dir.position.set(0.8, 1.4, 0.9);
+scene.add(dir);
+var dir2 = new THREE.DirectionalLight(0x88aaff, 0.25);
+dir2.position.set(-1.0, 0.4, -0.8);
+scene.add(dir2);
+
+/* ================= 궤도 컨트롤 (직접 구현) ================= */
+var INIT_CAM = { tx:0.25, ty:0.12, tz:0.0, dist:1.2, theta:0.85, phi:1.13 };
+var ctrl = {
+  target: new THREE.Vector3(INIT_CAM.tx, INIT_CAM.ty, INIT_CAM.tz),
+  dist: INIT_CAM.dist, theta: INIT_CAM.theta, phi: INIT_CAM.phi
+};
+function resetCamera(){
+  ctrl.target.set(INIT_CAM.tx, INIT_CAM.ty, INIT_CAM.tz);
+  ctrl.dist = INIT_CAM.dist; ctrl.theta = INIT_CAM.theta; ctrl.phi = INIT_CAM.phi;
+}
+function applyCamera(){
+  var sp = Math.sin(ctrl.phi), cp = Math.cos(ctrl.phi);
+  camera.position.set(
+    ctrl.target.x + ctrl.dist * sp * Math.sin(ctrl.theta),
+    ctrl.target.y + ctrl.dist * cp,
+    ctrl.target.z + ctrl.dist * sp * Math.cos(ctrl.theta)
+  );
+  camera.lookAt(ctrl.target);
+}
+var drag = null; // {mode:'rotate'|'pan', x, y}
+canvas.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+canvas.addEventListener('pointerdown', function(e){
+  var mode = (e.button === 0) ? 'rotate' : 'pan'; // 우클릭·휠클릭 = 팬
+  drag = { mode:mode, x:e.clientX, y:e.clientY };
+  canvas.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+canvas.addEventListener('pointermove', function(e){
+  if(!drag) return;
+  var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if(drag.mode === 'rotate'){
+    ctrl.theta -= dx * 0.005;
+    ctrl.phi   -= dy * 0.005;
+    ctrl.phi = Math.max(0.05, Math.min(Math.PI - 0.05, ctrl.phi));
+  }else{
+    var h = canvas.clientHeight || 1;
+    var scale = 2 * ctrl.dist * Math.tan(camera.fov * Math.PI/360) / h;
+    var right = new THREE.Vector3(), up = new THREE.Vector3(), look = new THREE.Vector3();
+    camera.getWorldDirection(look);
+    right.crossVectors(look, camera.up).normalize();
+    up.crossVectors(right, look).normalize();
+    ctrl.target.addScaledVector(right, -dx * scale);
+    ctrl.target.addScaledVector(up,     dy * scale);
+  }
+});
+function endDrag(e){ if(drag){ drag = null; try{ canvas.releasePointerCapture(e.pointerId); }catch(_){} } }
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('wheel', function(e){
+  e.preventDefault();
+  ctrl.dist *= Math.exp(e.deltaY * 0.001);
+  ctrl.dist = Math.max(0.03, Math.min(15, ctrl.dist));
+}, { passive:false });
+
+/* ================= 스테이지 빌드 ================= */
+var COLORS = {
+  sym: 0x7f93a8, wall: 0x5f7186, bad: 0xff5c5c,
+  wake: 0x2dd4bf, shell: 0xff9f43, cluster: 0xff5c5c
+};
+var stageGroup = null;
+var layers = { slice:null, wall:null, bad:null, presc:null, cluster:null };
+var prescAnim = { start:-1, items:[] }; // 스케일-인 애니메이션
+var currentStage = 0;
+
+function disposeObject(root){
+  root.traverse(function(o){
+    if(o.geometry) o.geometry.dispose();
+    if(o.material){
+      if(Array.isArray(o.material)) o.material.forEach(function(m){ m.dispose(); });
+      else o.material.dispose();
+    }
+  });
+}
+
+function makeBoxOutline(x0,y0,z0,x1,y1,z1, material, dashed){
+  var g = new THREE.BoxGeometry(x1-x0, y1-y0, z1-z0);
+  var eg = new THREE.EdgesGeometry(g);
+  g.dispose();
+  var ls = new THREE.LineSegments(eg, material);
+  if(dashed) ls.computeLineDistances();
+  ls.position.set((x0+x1)/2, (y0+y1)/2, (z0+z1)/2);
+  return ls;
+}
+
+/* --- 단면 위치 표시기 (도메인 x·z 범위의 얇은 사각 윤곽) --- */
+var sliceIndicator = null;
+function initSliceIndicator(){
+  var dm = rawData.meta && rawData.meta.domain;
+  var x0 = dm ? dm.x0 : -0.8, x1 = dm ? dm.x1 : 1.6;
+  var z0 = dm ? dm.z0 : -1.2, z1 = dm ? dm.z1 : 1.2;
+  var pts = new Float32Array([x0,0,z0,  x1,0,z0,  x1,0,z1,  x0,0,z1]);
+  var g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  sliceIndicator = new THREE.LineLoop(g,
+    new THREE.LineBasicMaterial({ color:0x8b96a5, transparent:true, opacity:0.25, depthWrite:false }));
+  scene.add(sliceIndicator);
+}
+
+/* --- 빈 단면 HUD 알림 --- */
+var emptyTimer = null;
+function showEmptyNotice(){
+  var el = document.getElementById('slice-empty');
+  el.style.display = 'block';
+  if(emptyTimer) clearTimeout(emptyTimer);
+  emptyTimer = setTimeout(function(){ el.style.display = 'none'; }, 1600);
+}
+
+/* --- 현재 (회차, 단면) 슬라이스 레이어 재구성 --- */
+function rebuildSliceLayer(){
+  if(!stageGroup) return;
+  if(layers.slice){
+    stageGroup.remove(layers.slice);
+    disposeObject(layers.slice);
+    layers.slice = null;
+  }
+  var d = getSlice(currentStage, currentSlice);
+  var grp = new THREE.Group();
+  if(d.n_pos && d.edges && d.edges.length){
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(d.pos, 3));
+    g.setIndex(new THREE.BufferAttribute(d.edges, 1));
+    grp.add(new THREE.LineSegments(g,
+      new THREE.LineBasicMaterial({ color:COLORS.sym, transparent:true, opacity:0.55 })));
+  }else if(!(story.active && story.pre)){
+    showEmptyNotice();
+  }
+  layers.slice = grp;
+  stageGroup.add(grp);
+  grp.visible = document.getElementById('tg-sym').checked;
+  updateSliceUI();
+}
+
+function updateSliceUI(){
+  var y = SLICE_YS[currentSlice];
+  document.getElementById('slice-label').textContent =
+    '단면 ' + (currentSlice+1) + '/' + SLICE_COUNT + ' · y=' + Number(y).toFixed(3) + ' m';
+  document.getElementById('slice-range').value = currentSlice + 1;
+  if(sliceIndicator){
+    sliceIndicator.position.y = y;
+    sliceIndicator.visible = document.getElementById('tg-sym').checked;
+  }
+}
+
+function setSlice(j){
+  j = Math.max(0, Math.min(SLICE_COUNT-1, j));
+  if(j === currentSlice){ updateSliceUI(); return; }
+  currentSlice = j; // 회차 전환과 독립 — 회차를 바꿔도 유지된다
+  rebuildSliceLayer();
+}
+
+function buildStage(i){
+  if(stageGroup){
+    scene.remove(stageGroup);
+    disposeObject(stageGroup);
+    layers.slice = null;
+  }
+  prescAnim.items = [];
+  var st = STAGES[i];
+  stageGroup = new THREE.Group();
+
+  /* --- 날개 표면 --- */
+  var wallGeo = new THREE.BufferGeometry();
+  wallGeo.setAttribute('position', new THREE.BufferAttribute(st.wall.pos, 3));
+  wallGeo.setIndex(new THREE.BufferAttribute(st.wall.idx, 1));
+  wallGeo.computeVertexNormals();
+  layers.wall = new THREE.Mesh(wallGeo,
+    new THREE.MeshPhongMaterial({ color:COLORS.wall, flatShading:true,
+      side:THREE.DoubleSide, shininess:42, specular:0x2a313b }));
+  stageGroup.add(layers.wall);
+
+  /* --- 불량 요소 점 --- */
+  layers.bad = new THREE.Group();
+  if(st.bad && st.bad.pts && st.bad.pts.length){
+    var bGeo = new THREE.BufferGeometry();
+    bGeo.setAttribute('position', new THREE.BufferAttribute(st.bad.pts, 3));
+    layers.bad.add(new THREE.Points(bGeo,
+      new THREE.PointsMaterial({ color:COLORS.bad, size:0.004, sizeAttenuation:true,
+        transparent:true, opacity:0.85, blending:THREE.AdditiveBlending, depthWrite:false })));
+  }
+  stageGroup.add(layers.bad);
+
+  /* --- 처방 형상 --- */
+  layers.presc = new THREE.Group();
+  layers.cluster = new THREE.Group();
+  var p = st.prescription || { type:"none" };
+
+  if(p.type === 'wake' && p.cylinders){
+    var cylFill = new THREE.MeshBasicMaterial({ color:COLORS.wake, transparent:true,
+      opacity:0.15, side:THREE.DoubleSide, depthWrite:false });
+    var cylLine = new THREE.LineBasicMaterial({ color:COLORS.wake, transparent:true, opacity:0.55 });
+    p.cylinders.forEach(function(cyl){
+      var grp = new THREE.Group();
+      var g = new THREE.CylinderGeometry(cyl.r, cyl.r, cyl.len, 28, 1, true);
+      g.rotateZ(-Math.PI/2); // 축을 +x 방향으로
+      var mesh = new THREE.Mesh(g, cylFill.clone());
+      var eg = new THREE.EdgesGeometry(g, 30);
+      var rim = new THREE.LineSegments(eg, cylLine.clone());
+      grp.add(mesh); grp.add(rim);
+      grp.position.set(cyl.x0 + cyl.len/2, cyl.y, cyl.z);
+      layers.presc.add(grp);
+      prescAnim.items.push(grp);
+    });
+    cylFill.dispose(); cylLine.dispose(); // 템플릿 재질 해제 (검수 지적)
+  }else if(p.type === 'shell' && p.boxes){
+    p.boxes.forEach(function(b, bi){
+      var inner = bi % 6; // 0 = 가장 안쪽
+      var grp = new THREE.Group();
+      var g = new THREE.BoxGeometry(b.x1-b.x0, b.y1-b.y0, b.z1-b.z0);
+      var mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+        color:COLORS.shell, transparent:true,
+        opacity: Math.max(0.04, 0.20 - inner*0.028),
+        side:THREE.DoubleSide, depthWrite:false }));
+      var eg = new THREE.EdgesGeometry(g);
+      var edge = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
+        color:COLORS.shell, transparent:true, opacity: Math.max(0.2, 0.7 - inner*0.08) }));
+      grp.add(mesh); grp.add(edge);
+      grp.position.set((b.x0+b.x1)/2, (b.y0+b.y1)/2, (b.z0+b.z1)/2);
+      layers.presc.add(grp);
+      prescAnim.items.push(grp);
+    });
+    if(p.clusters){
+      p.clusters.forEach(function(cl){
+        var mat = new THREE.LineDashedMaterial({ color:COLORS.cluster, transparent:true,
+          opacity:0.9, dashSize:0.008, gapSize:0.006 });
+        layers.cluster.add(makeBoxOutline(cl.x0,cl.y0,cl.z0,cl.x1,cl.y1,cl.z1, mat, true));
+      });
+    }
+  }
+  stageGroup.add(layers.presc);
+  stageGroup.add(layers.cluster);
+  scene.add(stageGroup);
+
+  /* --- 격자 단면 (지연 디코드 + 캐시) --- */
+  rebuildSliceLayer();
+
+  applyToggles();
+  prescAnim.start = (prescAnim.items.length && layers.presc.visible) ? performance.now() : -1;
+  if(prescAnim.start > 0){
+    prescAnim.items.forEach(function(o){ o.scale.setScalar(0.001); });
+  }
+}
+
+/* ================= UI: 스테퍼/자동재생 ================= */
+var stageBtns = Array.prototype.slice.call(document.querySelectorAll('.stage-btn'));
+var btnPrev = document.getElementById('btn-prev');
+var btnNext = document.getElementById('btn-next');
+var btnAuto = document.getElementById('autoplay');
+var autoTimer = null;
+
+function fmtInt(v){ return (v===null || v===undefined) ? '—' : Math.round(v).toLocaleString('ko-KR'); }
+function fmtFix(v, d){ return (v===null || v===undefined) ? '—' : Number(v).toFixed(d); }
+
+var STAT_ROWS = [
+  { key:'elements', label:'요소 수',            fmt:function(v){return fmtInt(v);},    kind:'cost'    },
+  { key:'bad_rate', label:'불량률(%)',          fmt:function(v){return fmtFix(v,3);},  kind:'quality' },
+  { key:'crit',     label:'진짜불량(SJ<0.2)',   fmt:function(v){return fmtInt(v);},    kind:'quality' },
+  { key:'ar',       label:'AR 불량',            fmt:function(v){return fmtInt(v);},    kind:'quality' },
+  { key:'northo',   label:'비직교 p95(°)',      fmt:function(v){return fmtFix(v,1);},  kind:'quality' },
+  { key:'skew',     label:'skew p95',           fmt:function(v){return fmtFix(v,2);},  kind:'quality' }
+];
+
+function deltaCell(row, cur, prev){
+  if(cur===null || cur===undefined || prev===null || prev===undefined)
+    return '<span class="d-none">—</span>';
+  var d = cur - prev;
+  if(d === 0) return '<span class="d-none">·</span>';
+  var mag;
+  if(row.key==='elements' || row.key==='crit' || row.key==='ar')
+    mag = Math.abs(Math.round(d)).toLocaleString('ko-KR');
+  else if(row.key==='bad_rate') mag = Math.abs(d).toFixed(3);
+  else if(row.key==='northo')   mag = Math.abs(d).toFixed(1);
+  else                          mag = Math.abs(d).toFixed(2);
+  if(row.kind === 'cost'){
+    return '<span class="d-cost">' + (d>0?'▲':'▼') + mag + '</span>';
+  }
+  return d < 0 ? '<span class="d-good">▼' + mag + '</span>'
+               : '<span class="d-bad">▲' + mag + '</span>';
+}
+
+/* ================= 회차 비교 표 (캔버스 하단) ================= */
+var CMP_ROWS = [
+  { key:'bad_rate', label:'불량률(%)',                    dec:3 },
+  { key:'crit',     label:'Jacobian 불량 (SJ&lt;0.2)',    dec:0 },
+  { key:'skew',     label:'skewness p95',                 dec:3 },
+  { key:'northo',   label:'non-orthogonality p95(°)',     dec:2 }
+];
+
+function fmtCmp(v, dec){
+  if(v===null || v===undefined) return '—';
+  return Number(v).toLocaleString('ko-KR', { maximumFractionDigits: dec }); // 천단위 콤마·소수 3자리 이내
+}
+function cmpDelta(cur, prev, dec){
+  if(cur===null || cur===undefined || prev===null || prev===undefined)
+    return '<span class="cd-none">—</span>';
+  var d = cur - prev;
+  if(d === 0) return '<span class="cd-none">·</span>';
+  var mag = Math.abs(d).toLocaleString('ko-KR', { maximumFractionDigits: dec });
+  return d < 0 ? '<span class="cd-good">▼' + mag + '</span>'   // 개선(감소) = 초록
+               : '<span class="cd-bad">▲' + mag + '</span>';   // 악화(증가) = 빨강
+}
+
+function renderCmp(cur){
+  var lim = (story.active && !story.done) ? story.maxStage : STAGES.length - 1; // 시연 중 미공개 회차 가림
+  var html = '<thead><tr><th class="rl"></th>';
+  for(var c=0;c<STAGES.length;c++){
+    html += '<th class="' + (c===cur ? 'cur' : '') + (c>lim ? ' chid' : '') + '">' + c + '회</th>';
+  }
+  html += '</tr></thead><tbody>';
+  CMP_ROWS.forEach(function(row){
+    html += '<tr><td class="rl">' + row.label + '</td>';
+    for(var c=0;c<STAGES.length;c++){
+      if(c > lim){
+        html += '<td class="chid"><div class="cv">·</div>' +
+                '<div class="cd"><span class="cd-none">—</span></div></td>';
+        continue;
+      }
+      var st = STAGES[c].stats || {};
+      var v  = (st[row.key]===undefined) ? null : st[row.key];
+      var pv = null;
+      if(c > 0){
+        var ps = STAGES[c-1].stats || {};
+        pv = (ps[row.key]===undefined) ? null : ps[row.key];
+      }
+      html += '<td class="' + (c===cur ? 'cur' : '') + '">' +
+              '<div class="cv">' + fmtCmp(v, row.dec) + '</div>' +
+              '<div class="cd">' + (c===0 ? '<span class="cd-none">—</span>' : cmpDelta(v, pv, row.dec)) + '</div></td>';
+    }
+    html += '</tr>';
+  });
+  html += '</tbody>';
+  document.getElementById('cmp').innerHTML = html;
+}
+
+var cmpCollapsed = false, cmpWasNarrow = false;
+var cmpToggleBtn = document.getElementById('cmp-toggle');
+function setCmpCollapsed(v){
+  cmpCollapsed = v;
+  document.getElementById('cmp').style.display = v ? 'none' : '';
+  cmpToggleBtn.textContent = v ? '지표 표 펴기' : '지표 표 접기';
+}
+function updateCmpLayout(){
+  var narrow = window.innerWidth < (document.body.classList.contains('chat-open') ? 1150 : 720);
+  cmpToggleBtn.style.display = narrow ? 'inline-block' : 'none';
+  if(narrow && !cmpWasNarrow) setCmpCollapsed(true);   // 좁아지면 자동 접기
+  if(!narrow && cmpWasNarrow) setCmpCollapsed(false);  // 다시 넓어지면 펴기
+  cmpWasNarrow = narrow;
+}
+cmpToggleBtn.addEventListener('click', function(){ setCmpCollapsed(!cmpCollapsed); });
+
+function updatePanel(i){
+  var st = STAGES[i];
+  var lim = (story.active && !story.done) ? story.maxStage : STAGES.length - 1;
+  var pre = story.active && story.pre;
+  stageBtns.forEach(function(b){
+    b.classList.toggle('active', +b.dataset.stage === i);
+    b.disabled = (+b.dataset.stage > lim); // 시연에서 아직 공개 전인 회차
+  });
+  btnPrev.disabled = (i === 0);
+  btnNext.disabled = (i >= lim);
+
+  if(pre){
+    document.getElementById('desc-label').textContent = '격자 생성 전';
+    document.getElementById('desc-sub').textContent = 'STEP 형상만 로드된 상태';
+    document.getElementById('desc-body').textContent =
+      '아직 격자가 없다 — 오른쪽 대화창에서 요청이 들어오면 생성이 시작된다.';
+  }else{
+    document.getElementById('desc-label').textContent = st.label;
+    document.getElementById('desc-sub').textContent = st.sub || '';
+    document.getElementById('desc-body').textContent = DESC[i] || '';
+  }
+
+  var prev = (i > 0) ? STAGES[i-1].stats : {};
+  var html = '';
+  STAT_ROWS.forEach(function(row){
+    var cur = (!pre && st.stats) ? st.stats[row.key] : null;
+    var pv  = prev ? prev[row.key] : null;
+    html += '<tr><td class="k">' + row.label + '</td>' +
+            '<td class="v">' + row.fmt(cur===undefined?null:cur) + '</td>' +
+            '<td class="d">' + ((i===0 || pre) ? '<span class="d-none">—</span>' : deltaCell(row, cur, pv)) + '</td></tr>';
+  });
+  document.getElementById('stats-body').innerHTML = html;
+
+  document.getElementById('hud-stage').textContent = pre ? '—' : (i + '회');
+  document.getElementById('hud-label').textContent = pre ? '격자 생성 전' : (st.sub || '');
+
+  renderCmp(i);
+}
+
+function setStage(i){
+  var max = (story.active && !story.done) ? story.maxStage : STAGES.length-1; // 시연 중 미공개 회차 잠금
+  i = Math.max(0, Math.min(max, i));
+  currentStage = i;
+  buildStage(i); // 단면 인덱스(currentSlice)는 회차 전환에도 유지
+  updatePanel(i);
+}
+
+stageBtns.forEach(function(b){
+  b.addEventListener('click', function(){ stopAuto(); setStage(+b.dataset.stage); });
+});
+btnPrev.addEventListener('click', function(){ stopAuto(); setStage(currentStage-1); });
+btnNext.addEventListener('click', function(){ stopAuto(); setStage(currentStage+1); });
+document.addEventListener('keydown', function(e){
+  var t = e.target; // 포커스된 컨트롤(슬라이더·버튼)은 네이티브 동작만 — 이중 발동 방지 (검수 지적)
+  if(t && (t.tagName === 'INPUT' || t.tagName === 'BUTTON')) return;
+  if((e.key === ' ' || e.key === 'Enter') && story.active && !story.done &&
+     document.body.classList.contains('chat-open')){
+    e.preventDefault(); storyNext(); return; // 시연 진행 단축키
+  }
+  if(e.key === 'ArrowLeft'){ stopAuto(); setStage(currentStage-1); }
+  else if(e.key === 'ArrowRight'){ stopAuto(); setStage(currentStage+1); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); setSlice(currentSlice+1); }
+  else if(e.key === 'ArrowDown'){ e.preventDefault(); setSlice(currentSlice-1); }
+});
+
+function stopAuto(){
+  if(autoTimer){ clearInterval(autoTimer); autoTimer = null; btnAuto.classList.remove('on'); }
+}
+btnAuto.addEventListener('click', function(){
+  if(autoTimer){ stopAuto(); return; }
+  btnAuto.classList.add('on');
+  setStage((currentStage + 1) % STAGES.length);
+  autoTimer = setInterval(function(){
+    setStage((currentStage + 1) % STAGES.length);
+  }, 3500);
+});
+
+/* ================= 스팬 단면 UI ================= */
+var sliceRange = document.getElementById('slice-range');
+sliceRange.max = SLICE_COUNT;
+sliceRange.value = currentSlice + 1;
+sliceRange.addEventListener('input', function(){ setSlice((+sliceRange.value) - 1); });
+document.getElementById('btn-slice-prev').addEventListener('click', function(){ setSlice(currentSlice-1); });
+document.getElementById('btn-slice-next').addEventListener('click', function(){ setSlice(currentSlice+1); });
+
+/* ================= 표시 토글 ================= */
+function applyToggles(){
+  var pre = story.active && story.pre; // 시연 초반: 형상만 보임 (격자 생성 전)
+  var showSlice = document.getElementById('tg-sym').checked && !pre;
+  if(layers.slice)   layers.slice.visible   = showSlice;
+  if(sliceIndicator) sliceIndicator.visible = showSlice;
+  if(layers.wall)    layers.wall.visible    = document.getElementById('tg-wall').checked;
+  if(layers.bad)     layers.bad.visible     = document.getElementById('tg-bad').checked && !pre;
+  if(layers.presc)   layers.presc.visible   = document.getElementById('tg-presc').checked && !pre;
+  if(layers.cluster) layers.cluster.visible = document.getElementById('tg-cluster').checked && !pre;
+}
+['tg-sym','tg-wall','tg-bad','tg-presc','tg-cluster'].forEach(function(id){
+  document.getElementById(id).addEventListener('change', applyToggles);
+});
+document.getElementById('reset-cam').addEventListener('click', resetCamera);
+
+/* ================= 리사이즈 & 루프 ================= */
+function onResize(){
+  var w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  updateCmpLayout();
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+function easeOutCubic(t){ return 1 - Math.pow(1-t, 3); }
+
+function animate(){
+  requestAnimationFrame(animate);
+  if(prescAnim.start > 0){
+    var t = (performance.now() - prescAnim.start) / 600; // 0.6초 스케일-인
+    if(t >= 1){
+      prescAnim.items.forEach(function(o){ o.scale.setScalar(1); });
+      prescAnim.start = -1;
+    }else{
+      var s = Math.max(0.001, easeOutCubic(t));
+      prescAnim.items.forEach(function(o){ o.scale.setScalar(s); });
+    }
+  }
+  applyCamera();
+  renderer.render(scene, camera);
+}
+
+/* ================= 대화 시연 (v3 — run_009 실측 재현) =================
+   대본의 사용자 발화·Qwen 응답·수치는 전부 run_009 실제 기록
+   (report/transcript.txt, work/improve_proposal_v1.json,
+    report/improve_summary.txt, report/quality_report_v1.json). */
+var story = { active:true, pre:true, maxStage:0, idx:0, done:false, auto:false };
+var storyTimers = [];   // 리셋 시 일괄 해제
+var autoAdvId = null;   // 자동 재생 전용 타이머
+var pending = null;     // 진행 중 박자 {finish, abort}
+
+var chatMsgs = document.getElementById('chat-msgs');
+var fakein = document.getElementById('chat-fakein');
+var btnStoryNext = document.getElementById('btn-story-next');
+var btnStoryAuto = document.getElementById('btn-story-auto');
+var NEXT_LABEL = '다음 ▶ <span style="font-size:11.5px;opacity:0.8">(Space)</span>';
+
+function chatScroll(){ chatMsgs.scrollTop = chatMsgs.scrollHeight; }
+function addMsg(role, label, html){
+  var d = document.createElement('div');
+  d.className = 'msg m-' + role;
+  d.innerHTML = (label ? '<span class="mlabel">' + label + '</span>' : '') + html;
+  chatMsgs.appendChild(d); chatScroll();
+  return d;
+}
+function later(fn, ms){ var id = setTimeout(fn, ms); storyTimers.push(id); return id; }
+function clearStoryTimers(){ storyTimers.forEach(clearTimeout); storyTimers = []; }
+
+/* 사용자 발화: 입력창에 타이핑 후 말풍선으로 */
+function typeUser(text, done){
+  fakein.classList.remove('idle');
+  fakein.innerHTML = '<span></span><span class="caret"></span>';
+  var slot = fakein.firstChild, n = 0, iv = null, fin = false;
+  function finishAll(){
+    if(fin) return; fin = true;
+    if(iv){ clearInterval(iv); iv = null; }
+    fakein.classList.add('idle');
+    fakein.textContent = '사용자 입력…';
+    done();
+  }
+  iv = setInterval(function(){
+    n++;
+    slot.textContent = text.slice(0, n);
+    if(n >= text.length){
+      clearInterval(iv); iv = null;
+      later(finishAll, 340);
+    }
+  }, 34);
+  return { finish: finishAll,
+           abort: function(){ fin = true; if(iv){ clearInterval(iv); iv = null; }
+                              fakein.classList.add('idle');
+                              fakein.textContent = '사용자 입력…'; } };
+}
+
+/* 각 박자: r 역할 / l 라벨 / h 내용 HTML / act 캔버스 동기화 / ad 자동 재생 대기 ms */
+var BEATS = [
+  { r:'sys', ad:2200,
+    h:'지금부터 <b>run_009</b> 실측 기록을 그대로 재현합니다 — 사용자 요청·Qwen 판단·수치 모두 실제 로그입니다.<br>아래 <b>다음 ▶</b> 버튼(또는 Space)으로 진행하세요.' },
+
+  { r:'user', ad:1400, h:'격자 만들어줘' },
+
+  { r:'qwen', l:'Qwen 9B — 요청 해석', ad:2800,
+    h:'기본 파라미터로 새 격자를 생성하는 요청으로 이해했습니다.' +
+      '<pre>{"intent": "initial_mesh",\n "params": {}, "refinements": []}</pre>' },
+
+  { r:'agent', l:'agent(코드) — 계산된 격자 조건', ad:4600,
+    h:'<table>' +
+      '<tr><td class="k">형상</td><td class="v">wing · 외부유동</td></tr>' +
+      '<tr><td class="k">경계층</td><td class="v">T 2.000 mm · 15층 · 성장 1.2</td></tr>' +
+      '<tr><td class="k">앞전·뒷전</td><td class="v">edge 1.000 mm · 구간 80</td></tr>' +
+      '<tr><td class="k">전역 최대</td><td class="v">80 mm (1D·2D·3D)</td></tr>' +
+      '<tr><td class="k">날개 주변</td><td class="v">10 mm (refine 박스)</td></tr>' +
+      '<tr><td class="k">후류</td><td class="v">초기 미포함 — 개선 시 자동</td></tr>' +
+      '</table>' +
+      '<div class="ask">이 값으로 격자를 만들까요? (y/n)</div>' },
+
+  { r:'user', ad:1300, h:'y' },
+
+  { r:'agent', l:'agent(코드) — 실행', ad:2000,
+    h:'[생성] baseline 코드에 승인값 치환 (결정적, Qwen 미사용)<br>' +
+      '[실행] SALOME 배치로 mesh 계산 중… <span class="note">실측 수 분 소요</span>' },
+
+  { r:'agent', l:'agent(코드) — 생성 완료', ad:4600,
+    act:function(){ story.pre = false; document.body.classList.remove('story-pre'); setStage(0); },
+    h:'<span class="good">[완성]</span> prism 311,610 + tetra 656,704 — mesh.med 저장' +
+      '<table>' +
+      '<tr><td class="k">요소 수</td><td class="v">968,314</td></tr>' +
+      '<tr><td class="k">불량(음·영 부피)</td><td class="v">0개</td></tr>' +
+      '<tr><td class="k">비직교 p95</td><td class="v">49.3°</td></tr>' +
+      '<tr><td class="k">skewness p95</td><td class="v">2.698</td></tr>' +
+      '</table>' +
+      '<div class="note">← 3D: 초기 격자(0회). 날개 주변 10mm·배경 80mm — 아직 후류 방향 해상도가 없다.</div>' },
+
+  { r:'user', ad:1400, h:'품질 알아서 개선해줘' },
+
+  { r:'qwen', l:'Qwen 9B — 요청 해석', ad:2600,
+    h:'기존 격자의 품질을 자동으로 개선해달라는 요청으로 이해했습니다.' +
+      '<pre>{"intent": "improve_mesh"}</pre>' },
+
+  { r:'agent', l:'agent(코드) — 자동 개선 루프 계획', ad:4600,
+    h:'<table>' +
+      '<tr><td class="k">종료 조건</td><td class="v">불량률 개선 + AR·진짜불량(SJ&lt;0.2) 비악화</td></tr>' +
+      '<tr><td class="k">안전 장치</td><td class="v">최대 3사이클 · 정체 시 중단 · 요소 예산 가드</td></tr>' +
+      '<tr><td class="k">후류 세분화</td><td class="v">원기둥 6단(3→20mm, r40mm) 자동 추가 — 9/16 이동</td></tr>' +
+      '</table>' +
+      '<div class="ask">자동 개선 루프를 시작할까요? (시작 후에는 승인 없이 진행)</div>' },
+
+  { r:'user', ad:1300, h:'y' },
+
+  { r:'agent', l:'루프 시작 — 후류 자동 추가 (코드, 결정적)', ad:4000,
+    act:function(){ story.maxStage = 1; setStage(1); },
+    h:'[후류] 원기둥 6단을 refinement에 추가하고 전체 재계산<br>' +
+      '<span class="good">[완성]</span> 1,400,814 요소 (prism 311,610 + tetra 1,089,204, <span class="em">+432,500</span>)' +
+      '<div class="note">← 3D: 청록 원기둥 6단이 날개 뒤 후류 통로를 덮는다. 이 상태가 루프의 기준선(사이클 0)이다.</div>' },
+
+  { r:'agent', l:'사이클 1/3 — 스크리닝·진단 (코드)', ad:5600,
+    h:'개선 대상 <span class="em">8,647개 = 불량률 0.617%</span> (Jacobian 8,647 / AR 15 — 벽 프리즘 제외) · 진짜불량 SJ&lt;0.2 <span class="em">224개</span>' +
+      '<table>' +
+      '<tr><td class="k">무리 ①</td><td class="v">677개 · 끝단 앞전 · 제시 0.79 mm</td></tr>' +
+      '<tr><td class="k">무리 ②</td><td class="v">554개 · 뿌리쪽 뒷전 · 제시 1.42 mm</td></tr>' +
+      '<tr><td class="k">무리 ③~⑤</td><td class="v">537·531·527개 · 중앙 뒷전 · 1.40~1.42 mm</td></tr>' +
+      '<tr><td class="k">상황 변수</td><td class="v">region=surface · shape=roundish · isolated=false</td></tr>' +
+      '</table>' +
+      '<div class="note">← 3D: 빨간 점 = 불량 tetra 중심 8,647개. 이 상황을 결정표 객관식으로 Qwen에게 넘긴다.</div>' },
+
+  { r:'qwen', l:'Qwen 9B — 결정표에서 처방 선택 (판단)', ad:4600,
+    h:'<pre>{"method": "shell",\n "targets": [1, 2, 3, 4, 5],\n "reason": "불량 클러스터가 모두 surface\n  영역에 밀집되어 있으므로 결정표의\n  기본 처방인 shell 방법을 적용합니다."}</pre>' +
+      '<div class="note">1차 응답 JSON 그대로 (재시도·값 발명 없음)</div>' },
+
+  { r:'agent', l:'처방 조립·재격자 (코드)', ad:4600,
+    act:function(){ document.getElementById('tg-cluster').checked = true;
+                    story.maxStage = 2; setStage(2); },
+    h:'assemble_choice: shell 상한 2곳 — 밀도 상위 <span class="em">①(0.79mm)·②(1.42mm)</span>에 6겹 껍질판 상자 12개 조립 (값 계산은 코드, Qwen은 갈래만)<br>' +
+      '[실행] 재격자… <span class="good">[완성]</span> 2,968,212 요소 (+111.9%)' +
+      '<div class="note">← 3D: 주황 6겹 상자 2곳 + 빨간 점선 = 진단 무리. 슬라이더로 단면을 옮기면 두 곳의 밀집이 보인다.</div>' },
+
+  { r:'agent', l:'판정·종료 (코드)', ad:5200,
+    h:'<table>' +
+      '<tr><td class="k">불량률</td><td class="v">0.617 → <span class="good">0.354%</span></td></tr>' +
+      '<tr><td class="k">진짜불량(SJ&lt;0.2)</td><td class="v">224 → <span class="good">198</span></td></tr>' +
+      '<tr><td class="k">AspectRatio</td><td class="v">15 → <span class="good">11</span></td></tr>' +
+      '<tr><td class="k">비직교 p95</td><td class="v">36.96 → <span class="good">27.70°</span></td></tr>' +
+      '<tr><td class="k">skewness p95</td><td class="v">1.111 → <span class="good">0.354</span></td></tr>' +
+      '</table>' +
+      '불량률 개선 + AR·진짜불량 비악화 → <span class="good">[루프 종료] 개선 확인</span><br>' +
+      '<span class="note">[보존] improve_summary.txt · viz\\cycle_00·01 (ParaView) · GUI dump 저장</span>' },
+
+  { r:'sys', ad:2400,
+    act:function(){ endStory(); },
+    h:'시연 끝 — 이제 자유롭게: <b>◀▶</b> 회차 전환 · 왼쪽 슬라이더로 <b>스팬 단면 20개</b> · 하단 <b>회차 비교 표</b>.<br><b>처음부터</b>를 누르면 다시 재생됩니다.' },
+];
+
+function runBeat(b){
+  if(b.r === 'user'){
+    pending = typeUser(b.h, function(){
+      pending = null;
+      addMsg('user', null, b.h);
+      if(b.act) b.act();
+      beatDone(b);
+    });
+  }else if(b.r === 'sys'){
+    addMsg('sys', null, b.h);
+    if(b.act) b.act();
+    beatDone(b);
+  }else{
+    var bubble = addMsg(b.r, b.l || null,
+      '<span class="typing"><i></i><i></i><i></i></span>');
+    var filled = false;
+    var fill = function(){
+      if(filled) return; filled = true;
+      pending = null;
+      bubble.innerHTML = (b.l ? '<span class="mlabel">' + b.l + '</span>' : '') + b.h;
+      chatScroll();
+      if(b.act) b.act();
+      beatDone(b);
+    };
+    var tid = later(fill, 550);
+    pending = { finish: function(){ clearTimeout(tid); fill(); },
+                abort:  function(){ clearTimeout(tid); filled = true; } };
+  }
+}
+function beatDone(b){
+  if(story.idx >= BEATS.length && !story.done){ endStory(); return; }
+  if(story.auto && !story.done){
+    autoAdvId = setTimeout(function(){
+      autoAdvId = null;
+      if(story.auto) storyNext();
+    }, b.ad || 2400);
+  }
+}
+function storyNext(){
+  if(story.done) return;
+  if(pending){ var p = pending; pending = null; p.finish(); return; }
+  if(autoAdvId){ clearTimeout(autoAdvId); autoAdvId = null; }
+  if(story.idx >= BEATS.length){ endStory(); return; }
+  runBeat(BEATS[story.idx++]);
+}
+function endStory(){
+  if(story.done) return;
+  story.done = true; story.active = false; story.auto = false;
+  if(autoAdvId){ clearTimeout(autoAdvId); autoAdvId = null; }
+  btnStoryAuto.classList.remove('on');
+  btnStoryNext.disabled = true;
+  btnStoryNext.textContent = '시연 완료';
+  btnAuto.disabled = false;
+  fakein.classList.add('idle');
+  fakein.textContent = '시연 종료 — 자유 탐색 모드';
+  updatePanel(currentStage);
+}
+function storyReset(){
+  if(pending && pending.abort) pending.abort();
+  pending = null;
+  clearStoryTimers();
+  if(autoAdvId){ clearTimeout(autoAdvId); autoAdvId = null; }
+  story.active = true; story.pre = true; story.maxStage = 0;
+  story.idx = 0; story.done = false; story.auto = false;
+  btnStoryAuto.classList.remove('on');
+  btnStoryNext.disabled = false;
+  btnStoryNext.innerHTML = NEXT_LABEL;
+  btnAuto.disabled = true; stopAuto();
+  document.body.classList.add('story-pre');
+  document.getElementById('tg-cluster').checked = false; // 시연 기본값 복원
+  chatMsgs.innerHTML = '';
+  fakein.classList.add('idle');
+  fakein.textContent = '사용자 입력…';
+  setStage(0);
+  storyNext(); // 안내 박자부터
+}
+
+btnStoryNext.addEventListener('click', function(){ storyNext(); });
+btnStoryAuto.addEventListener('click', function(){
+  if(story.done) return;
+  story.auto = !story.auto;
+  btnStoryAuto.classList.toggle('on', story.auto);
+  if(story.auto) storyNext();
+  else if(autoAdvId){ clearTimeout(autoAdvId); autoAdvId = null; }
+});
+document.getElementById('btn-story-reset').addEventListener('click', storyReset);
+document.getElementById('chat-collapse').addEventListener('click', function(){
+  document.body.classList.remove('chat-open'); onResize();
+});
+document.getElementById('chat-open-tab').addEventListener('click', function(){
+  document.body.classList.add('chat-open'); onResize();
+});
+
+initSliceIndicator();
+storyReset(); // 시연 시작 상태로 진입 (setStage(0) 포함)
+animate();
+})();
+</script>
+</body>
+</html>
